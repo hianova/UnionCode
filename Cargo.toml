@@ -1,0 +1,8 @@
+[package]
+name = "union_code"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dualcache-ff="0.4.0"
+heapless = { version = "0.8", default-features = false }
