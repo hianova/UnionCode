@@ -1,0 +1,14 @@
+[llm]
+provider = "local"
+endpoint = "http://localhost:1234/v1"
+model = "qwen-1.7b-instruct"
+max_tokens = 2048
+
+[translation]
+source_lang = "zh-TW"
+target_langs = ["en-US", "ja-JP"]
+ignore_paths = ["tests/", "benches/"]
+
+[union_code]
+dictionary_dir = "dictionaries/"
+sync_opcodes = true
