@@ -3,7 +3,10 @@
 #[cfg(test)]
 extern crate std;
 
+extern crate alloc;
+
 // Include the generated ROM matrix at compile time
+pub mod compiler;
 include!(concat!(env!("OUT_DIR"), "/default_rom.rs"));
 
 /// 極限壓縮後的意圖輸出 (4 bytes due to alignment padding, for safety)
@@ -28,10 +31,10 @@ pub enum CacheError {
 
 pub trait SemanticCache {
     /// 傳入字串的極速 Hash (如 FxHash)，回傳壓縮意圖
-    fn get_intent(&mut self, hash: u32) -> Option<CompressedIntent>;
+    fn get_intent(&self, hash: u32) -> Option<CompressedIntent>;
 
     /// 寫入新的語意映射 (用於群體免疫與快取預熱)
-    fn put_intent(&mut self, hash: u32, intent: CompressedIntent) -> Result<(), CacheError>;
+    fn put_intent(&self, hash: u32, intent: CompressedIntent) -> Result<(), CacheError>;
 }
 
 
@@ -44,11 +47,11 @@ where
     S: core::hash::BuildHasher + Clone + Send + 'static,
     Tls: dualcache_ff::tls::TlsProvider + 'static,
 {
-    fn get_intent(&mut self, hash: u32) -> Option<CompressedIntent> {
+    fn get_intent(&self, hash: u32) -> Option<CompressedIntent> {
         self.get(&hash)
     }
 
-    fn put_intent(&mut self, hash: u32, intent: CompressedIntent) -> Result<(), CacheError> {
+    fn put_intent(&self, hash: u32, intent: CompressedIntent) -> Result<(), CacheError> {
         self.insert(hash, intent);
         Ok(())
     }
@@ -58,11 +61,11 @@ impl<const N: usize, S> SemanticCache for dualcache_ff::static_cache::static_cac
 where
     S: core::hash::BuildHasher,
 {
-    fn get_intent(&mut self, hash: u32) -> Option<CompressedIntent> {
+    fn get_intent(&self, hash: u32) -> Option<CompressedIntent> {
         self.get(&hash)
     }
 
-    fn put_intent(&mut self, hash: u32, intent: CompressedIntent) -> Result<(), CacheError> {
+    fn put_intent(&self, hash: u32, intent: CompressedIntent) -> Result<(), CacheError> {
         self.insert(hash, intent);
         Ok(())
     }
@@ -72,6 +75,24 @@ where
 // 3. FST 靜態路由引擎 (Finite State Transducer)
 // ============================================================
 
+/// `FstEngine` 是一個基於 Aho-Corasick 自動機的靜態路由引擎。
+/// 它透過 O(N) 的時間複雜度解析位元組串流，無任何記憶體分配。
+///
+/// # Examples
+/// ```
+/// use union_code::{FstEngine, CompressedIntent};
+/// 
+/// // 使用預設的靜態 ROM 矩陣
+/// let fst = FstEngine::default();
+/// 
+/// // 確保 ROM 矩陣完好無損
+/// assert!(fst.validate_rom());
+/// 
+/// // 解析輸入
+/// let result = fst.parse_stream("請幫我拿咖啡".as_bytes());
+/// // assert_eq!(result, Some(CompressedIntent { opcode: 0x20, payload_id: 0x0A42 }));
+/// ```
+
 pub struct FstEngine {
     // 唯讀記憶體中的靜態狀態機矩陣 (編譯期生成)
     pub rom_matrix: &'static [u8],
@@ -80,6 +101,41 @@ pub struct FstEngine {
 impl FstEngine {
     pub const fn new(rom_matrix: &'static [u8]) -> Self {
         Self { rom_matrix }
+    }
+
+    /// 驗證 ROM 矩陣的結構完整性，確保所有的狀態轉移指標皆在合法範圍內。
+    /// 建議在系統初始化或載入外部 ROM 時呼叫此方法。
+    pub fn validate_rom(&self) -> bool {
+        let mut pos = 0;
+        let len = self.rom_matrix.len();
+        if len == 0 {
+            return true;
+        }
+        while pos < len {
+            if pos + 1 > len { return false; }
+            let flags = self.rom_matrix[pos];
+            pos += 1;
+            
+            if flags & 1 != 0 { pos += 1; }
+            if flags & 2 != 0 { pos += 2; }
+            
+            if pos + 2 > len { return false; }
+            let fail_offset = u16::from_le_bytes([self.rom_matrix[pos], self.rom_matrix[pos + 1]]) as usize;
+            if fail_offset >= len { return false; }
+            pos += 2;
+            
+            if pos + 1 > len { return false; }
+            let num_transitions = self.rom_matrix[pos] as usize;
+            pos += 1;
+            
+            if pos + num_transitions * 3 > len { return false; }
+            for _ in 0..num_transitions {
+                let child_offset = u16::from_le_bytes([self.rom_matrix[pos + 1], self.rom_matrix[pos + 2]]) as usize;
+                if child_offset >= len { return false; }
+                pos += 3;
+            }
+        }
+        pos == len
     }
 
     /// O(N) 確定性狀態機解析，N 為輸入位元組長度
@@ -205,6 +261,26 @@ impl Default for FstEngine {
 // 4. UnionCode 核心轉譯器 (The Translator)
 // ============================================================
 
+/// `UnionCode` 核心引擎。結合了 O(1) 語意快取與 O(N) FST 靜態路由解析，
+/// 負責將人類語言字串映射為極限壓縮的 3-Bytes `CompressedIntent`。
+///
+/// # Examples
+/// ```
+/// use union_code::{UnionCode, CompressedIntent};
+/// use dualcache_ff::static_cache::static_cache::StaticDualCache;
+/// use dualcache_ff::config::Config;
+/// 
+/// // 初始化記憶體預算為 1MB 的靜態 LRU 快取
+/// let config = Config::with_memory_budget(1, 100);
+/// let cache = StaticDualCache::<u32, CompressedIntent, 64>::new(config);
+/// 
+/// // 建立 UnionCode 引擎
+/// let uc = UnionCode::new(cache);
+/// 
+/// // 解碼輸入（完全無記憶體分配、Lock-free、Thread-safe）
+/// let result = uc.decode("請幫我拿咖啡".as_bytes());
+/// // assert_eq!(result, Ok(CompressedIntent { opcode: 0x20, payload_id: 0x0A42 }));
+/// ```
 pub struct UnionCode<'a, C: SemanticCache> {
     pub cache: C,
     pub fst: FstEngine,
@@ -229,7 +305,7 @@ impl<'a, C: SemanticCache> UnionCode<'a, C> {
     }
 
     /// 核心轉譯管線：人類語言 -> 3 Bytes 二進位指令
-    pub fn decode(&mut self, human_input: &'a [u8]) -> Result<CompressedIntent, u8> {
+    pub fn decode(&self, human_input: &'a [u8]) -> Result<CompressedIntent, u8> {
         // 1. 計算極速 Hash (FxHash)
         let input_hash = self.fast_hash(human_input);
 
@@ -861,7 +937,7 @@ mod tests {
         let mut sink = 0u8;
         for _ in 0..iterations {
             // Create a fresh UnionCode each time to force FST path
-            let c = new_test_cache::<2>();
+            let c = new_test_cache::<5>();
             let mut uc2 = UnionCode::new(c);
             if let Ok(intent) = uc2.decode(input) {
                 sink = sink.wrapping_add(intent.opcode);
