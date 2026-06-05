@@ -1,4 +1,6 @@
-use union_code::{FstEngine, UnionCode, CompressedIntent, EdgeSemanticCache};
+use union_code::{FstEngine, UnionCode, CompressedIntent};
+use dualcache_ff::static_cache::static_cache::StaticDualCache;
+use dualcache_ff::config::Config;
 
 // Load the compiled plug-and-play dictionary for the Smart Box application.
 // This is generated at compile time from `dictionaries/smart_box.txt`.
@@ -8,8 +10,9 @@ fn main() {
     println!("=== UnionCode Reference Implementation: ESP32 Smart Box ===");
     println!("This demo showcases the extreme decoupling and 'Plug-and-Play' nature of UnionCode.\n");
     
-    // 1. Initialize the statically allocated Edge Cache (L1)
-    let cache = EdgeSemanticCache::<16>::new();
+    // 1. Initialize the statically allocated L1 Cache from dualcache-ff
+    let config = Config::with_memory_budget(1, 100);
+    let cache = StaticDualCache::<u32, CompressedIntent, 16>::new(config);
     
     // 2. Initialize the FST Engine (L2) with our domain-specific ROM Matrix.
     // The SMART_BOX_ROM_MATRIX is a zero-allocation static slice representing

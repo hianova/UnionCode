@@ -178,14 +178,18 @@ fn main() {
                     if parts.len() >= 3 {
                         let word = parts[1];
                         let hex_str = parts[2].trim_start_matches("0x");
-                        if parts[0] == "VERB" {
-                            if let Ok(code) = u8::from_str_radix(hex_str, 16) {
-                                verbs.push((word, code));
+                        match parts[0] {
+                            "VERB" => {
+                                if let Ok(code) = u8::from_str_radix(hex_str, 16) {
+                                    verbs.push((word, code));
+                                }
                             }
-                        } else if parts[0] == "NOUN" {
-                            if let Ok(code) = u16::from_str_radix(hex_str, 16) {
-                                nouns.push((word, code));
+                            "NOUN" => {
+                                if let Ok(code) = u16::from_str_radix(hex_str, 16) {
+                                    nouns.push((word, code));
+                                }
                             }
+                            _ => {}
                         }
                     }
                 }

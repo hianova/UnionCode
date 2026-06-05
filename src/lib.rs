@@ -34,68 +34,6 @@ pub trait SemanticCache {
     fn put_intent(&mut self, hash: u32, intent: CompressedIntent) -> Result<(), CacheError>;
 }
 
-/// 邊緣端專用的微型快取 (佔用 < 2KB SRAM)
-pub struct EdgeSemanticCache<const N: usize = 256> {
-    // 使用 heapless 靜態分配，N 通常設為 256
-    map: heapless::FnvIndexMap<u32, CompressedIntent, N>,
-    order: heapless::Vec<u32, N>,
-}
-
-impl<const N: usize> EdgeSemanticCache<N> {
-    pub fn new() -> Self {
-        Self {
-            map: heapless::FnvIndexMap::new(),
-            order: heapless::Vec::new(),
-        }
-    }
-}
-
-impl<const N: usize> Default for EdgeSemanticCache<N> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<const N: usize> SemanticCache for EdgeSemanticCache<N> {
-    fn get_intent(&mut self, hash: u32) -> Option<CompressedIntent> {
-        if self.map.contains_key(&hash) {
-            // Update LRU: move to the back of the queue
-            if let Some(pos) = self.order.iter().position(|&x| x == hash) {
-                self.order.remove(pos);
-            }
-            let _ = self.order.push(hash);
-            self.map.get(&hash).copied()
-        } else {
-            None
-        }
-    }
-
-    fn put_intent(&mut self, hash: u32, intent: CompressedIntent) -> Result<(), CacheError> {
-        if self.map.contains_key(&hash) {
-            // Update value and position in LRU
-            self.map.insert(hash, intent).map_err(|_| CacheError::InternalError)?;
-            if let Some(pos) = self.order.iter().position(|&x| x == hash) {
-                self.order.remove(pos);
-            }
-            let _ = self.order.push(hash);
-            Ok(())
-        } else {
-            // Check if map is full
-            if self.map.len() >= N {
-                // Evict the least recently used element (the first in the vector)
-                if !self.order.is_empty() {
-                    let evict_hash = self.order.remove(0);
-                    self.map.remove(&evict_hash);
-                } else if let Some(&first_hash) = self.map.keys().next() {
-                    self.map.remove(&first_hash);
-                }
-            }
-            self.map.insert(hash, intent).map_err(|_| CacheError::Full)?;
-            let _ = self.order.push(hash);
-            Ok(())
-        }
-    }
-}
 
 // ------------------------------------------------------------
 // Implement SemanticCache for dualcache-ff structs
@@ -331,61 +269,20 @@ impl<'a, C: SemanticCache> UnionCode<'a, C> {
 mod tests {
     extern crate std;
     use super::*;
+    use dualcache_ff::static_cache::static_cache::StaticDualCache;
+    use dualcache_ff::config::Config;
 
-    #[test]
-    fn test_edge_semantic_cache_lru() {
-        let mut cache = EdgeSemanticCache::<4>::new();
-        let i1 = CompressedIntent { opcode: 0x10, payload_id: 1 };
-        let i2 = CompressedIntent { opcode: 0x20, payload_id: 2 };
-        let i3 = CompressedIntent { opcode: 0x30, payload_id: 3 };
-        let i4 = CompressedIntent { opcode: 0x40, payload_id: 4 };
-        let i5 = CompressedIntent { opcode: 0x50, payload_id: 5 };
-
-        assert!(cache.put_intent(1, i1).is_ok());
-        assert!(cache.put_intent(2, i2).is_ok());
-        assert!(cache.put_intent(3, i3).is_ok());
-        assert!(cache.put_intent(4, i4).is_ok());
-
-        // order: 1, 2, 3, 4
-        // Get 1 to refresh it
-        assert_eq!(cache.get_intent(1), Some(i1));
-        // order: 2, 3, 4, 1
-
-        // Insert 5, which should evict 2 (the least recently used)
-        assert!(cache.put_intent(5, i5).is_ok());
-
-        assert_eq!(cache.get_intent(2), None);
-        assert_eq!(cache.get_intent(3), Some(i3));
-        assert_eq!(cache.get_intent(4), Some(i4));
-        assert_eq!(cache.get_intent(1), Some(i1));
-        assert_eq!(cache.get_intent(5), Some(i5));
+    fn new_test_cache<const N: usize>() -> StaticDualCache<u32, CompressedIntent, N> {
+        StaticDualCache::new(Config::with_memory_budget(1, 100))
     }
 
-    #[test]
-    fn test_edge_semantic_cache_update_existing() {
-        let mut cache = EdgeSemanticCache::<2>::new();
-        let i1 = CompressedIntent { opcode: 0x10, payload_id: 1 };
-        let i2 = CompressedIntent { opcode: 0x20, payload_id: 2 };
-        let i1_new = CompressedIntent { opcode: 0x11, payload_id: 11 };
-        let i3 = CompressedIntent { opcode: 0x30, payload_id: 3 };
 
-        assert!(cache.put_intent(1, i1).is_ok());
-        assert!(cache.put_intent(2, i2).is_ok());
 
-        // Update 1: should refresh its position as most recently used
-        assert!(cache.put_intent(1, i1_new).is_ok());
 
-        // Insert 3: since 1 was refreshed, 2 is now LRU and should be evicted
-        assert!(cache.put_intent(3, i3).is_ok());
-
-        assert_eq!(cache.get_intent(2), None);
-        assert_eq!(cache.get_intent(1), Some(i1_new));
-        assert_eq!(cache.get_intent(3), Some(i3));
-    }
 
     #[test]
     fn test_fast_hash() {
-        let cache = EdgeSemanticCache::<4>::new();
+        let cache = new_test_cache::<4>();
         let uc = UnionCode::new(cache);
         
         // Assert that hashes are consistent
@@ -472,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_union_code_pipeline() {
-        let cache = EdgeSemanticCache::<16>::new();
+        let cache = new_test_cache::<16>();
         let mut uc = UnionCode::new(cache);
 
         let input = "請幫我拿咖啡".as_bytes();
@@ -571,97 +468,13 @@ mod tests {
     // STRESS TESTS
     // ============================================================
 
-    #[test]
-    fn test_cache_capacity_two_as_minimum() {
-        // heapless::FnvIndexMap requires N > 1, so minimum usable capacity is 2
-        let mut cache = EdgeSemanticCache::<2>::new();
-        let i1 = CompressedIntent { opcode: 0x10, payload_id: 1 };
-        let i2 = CompressedIntent { opcode: 0x20, payload_id: 2 };
-        let i3 = CompressedIntent { opcode: 0x30, payload_id: 3 };
 
-        assert!(cache.put_intent(1, i1).is_ok());
-        assert_eq!(cache.get_intent(1), Some(i1));
 
-        assert!(cache.put_intent(2, i2).is_ok());
-        assert_eq!(cache.get_intent(2), Some(i2));
 
-        // Insert third should evict first (LRU)
-        assert!(cache.put_intent(3, i3).is_ok());
-        assert_eq!(cache.get_intent(1), None);
-        assert_eq!(cache.get_intent(2), Some(i2));
-        assert_eq!(cache.get_intent(3), Some(i3));
-    }
 
-    #[test]
-    fn test_cache_rapid_eviction_cycle() {
-        // Fill and evict repeatedly to stress the LRU
-        let mut cache = EdgeSemanticCache::<4>::new();
-        for round in 0..100u32 {
-            let base = round * 4;
-            for j in 0..4u32 {
-                let intent = CompressedIntent {
-                    opcode: (base + j) as u8,
-                    payload_id: (base + j) as u16,
-                };
-                assert!(cache.put_intent(base + j, intent).is_ok());
-            }
-            // All 4 from this round should be present
-            for j in 0..4u32 {
-                assert!(cache.get_intent(base + j).is_some(),
-                    "round {round}, key {} missing", base + j);
-            }
-            // Previous round should be fully evicted (if round > 0)
-            if round > 0 {
-                let prev_base = (round - 1) * 4;
-                for j in 0..4u32 {
-                    assert_eq!(cache.get_intent(prev_base + j), None,
-                        "round {round}, old key {} still present", prev_base + j);
-                }
-            }
-        }
-    }
 
-    #[test]
-    fn test_cache_same_key_repeated_put() {
-        let mut cache = EdgeSemanticCache::<2>::new();
-        // Put the same key 1000 times with different values
-        for i in 0..1000u16 {
-            let intent = CompressedIntent { opcode: 0x10, payload_id: i };
-            assert!(cache.put_intent(42, intent).is_ok());
-        }
-        // Should have the last value
-        assert_eq!(
-            cache.get_intent(42),
-            Some(CompressedIntent { opcode: 0x10, payload_id: 999 })
-        );
-    }
 
-    #[test]
-    fn test_cache_order_map_sync_invariant() {
-        // Verify that `order` and `map` stay in sync after many operations
-        let mut cache = EdgeSemanticCache::<8>::new();
-        // Fill
-        for i in 0..8u32 {
-            let intent = CompressedIntent { opcode: i as u8, payload_id: i as u16 };
-            cache.put_intent(i, intent).unwrap();
-        }
-        // Access in reverse to shuffle LRU
-        for i in (0..8u32).rev() {
-            assert!(cache.get_intent(i).is_some());
-        }
-        // Evict by inserting 8 new entries
-        for i in 8..16u32 {
-            let intent = CompressedIntent { opcode: i as u8, payload_id: i as u16 };
-            cache.put_intent(i, intent).unwrap();
-        }
-        // Old 0..8 should be gone, 8..16 should be present
-        for i in 0..8u32 {
-            assert_eq!(cache.get_intent(i), None, "key {i} should have been evicted");
-        }
-        for i in 8..16u32 {
-            assert!(cache.get_intent(i).is_some(), "key {i} should be present");
-        }
-    }
+
 
     // ============================================================
     // HASH QUALITY TESTS
@@ -669,7 +482,7 @@ mod tests {
 
     #[test]
     fn test_hash_empty_input() {
-        let cache = EdgeSemanticCache::<4>::new();
+        let cache = new_test_cache::<4>();
         let uc = UnionCode::new(cache);
         let h = uc.fast_hash(b"");
         // FNV-1a offset basis
@@ -679,7 +492,7 @@ mod tests {
     #[test]
     fn test_hash_single_byte_avalanche() {
         // Single-bit difference in input should cause significant hash difference
-        let cache = EdgeSemanticCache::<4>::new();
+        let cache = new_test_cache::<4>();
         let uc = UnionCode::new(cache);
 
         let mut collision_count = 0u32;
@@ -701,7 +514,7 @@ mod tests {
     #[test]
     fn test_hash_chinese_distribution() {
         // Test hash distribution for common Chinese command patterns
-        let cache = EdgeSemanticCache::<4>::new();
+        let cache = new_test_cache::<4>();
         let uc = UnionCode::new(cache);
 
         let inputs: &[&[u8]] = &[
@@ -737,7 +550,7 @@ mod tests {
     #[test]
     fn test_hash_collision_rate_random_strings() {
         // Generate 1000 pseudo-random strings and measure collision rate
-        let cache = EdgeSemanticCache::<4>::new();
+        let cache = new_test_cache::<4>();
         let uc = UnionCode::new(cache);
 
         let mut hashes = std::collections::HashSet::new();
@@ -768,10 +581,7 @@ mod tests {
     fn test_fst_very_long_input() {
         let fst = FstEngine::default();
         // 10KB of padding bytes + "拿咖啡" at the end
-        let mut input = std::vec::Vec::new();
-        for _ in 0..10_000 {
-            input.push(b'x');
-        }
+        let mut input = std::vec![b'x'; 10_000];
         input.extend_from_slice("拿咖啡".as_bytes());
         let result = fst.parse_stream(&input);
         assert_eq!(result, Some(CompressedIntent { opcode: 0x20, payload_id: 0x0A42 }));
@@ -843,7 +653,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_cache_fills_and_evicts_correctly() {
-        let cache = EdgeSemanticCache::<2>::new();
+        let cache = new_test_cache::<2>();
         let mut uc = UnionCode::new(cache);
 
         // Decode 3 different valid inputs with cache size 2
@@ -875,7 +685,7 @@ mod tests {
         // Decode many unknown inputs, then verify valid input still works
         // We use separate UnionCode instances per batch to avoid lifetime issues
         // with format! strings
-        let cache = EdgeSemanticCache::<4>::new();
+        let cache = new_test_cache::<4>();
         let mut uc = UnionCode::new(cache);
 
         // Feed static unknown inputs
@@ -888,7 +698,7 @@ mod tests {
             b"xxxxxxxxxxx",
         ];
         for input in unknowns {
-            assert_eq!(uc.decode(*input), Err(0x06));
+            assert_eq!(uc.decode(input), Err(0x06));
         }
 
         // Valid input should still work
@@ -902,7 +712,7 @@ mod tests {
 
     #[test]
     fn bench_fast_hash_throughput() {
-        let cache = EdgeSemanticCache::<4>::new();
+        let cache = new_test_cache::<4>();
         let uc = UnionCode::new(cache);
         let data = b"please get me some coffee thank you very much";
 
@@ -962,7 +772,7 @@ mod tests {
 
     #[test]
     fn bench_cache_get_hit() {
-        let mut cache = EdgeSemanticCache::<256>::new();
+        let mut cache = new_test_cache::<256>();
         // Pre-fill cache
         for i in 0..256u32 {
             let intent = CompressedIntent { opcode: (i & 0xFF) as u8, payload_id: i as u16 };
@@ -982,14 +792,14 @@ mod tests {
         let ns_per_op = elapsed.as_nanos() as f64 / iterations as f64;
 
         std::println!(
-            "\n[BENCH] EdgeSemanticCache<256> get_intent (hit): {:.1} ns/op, sink={}",
+            "\n[BENCH] StaticDualCache<256> get_intent (hit): {:.1} ns/op, sink={}",
             ns_per_op, sink
         );
     }
 
     #[test]
     fn bench_cache_get_miss() {
-        let mut cache = EdgeSemanticCache::<256>::new();
+        let mut cache = new_test_cache::<256>();
         // Pre-fill cache with keys 0..256
         for i in 0..256u32 {
             let intent = CompressedIntent { opcode: (i & 0xFF) as u8, payload_id: i as u16 };
@@ -1009,33 +819,16 @@ mod tests {
         let ns_per_op = elapsed.as_nanos() as f64 / iterations as f64;
 
         std::println!(
-            "\n[BENCH] EdgeSemanticCache<256> get_intent (miss): {:.1} ns/op, sink={}",
+            "\n[BENCH] StaticDualCache<256> get_intent (miss): {:.1} ns/op, sink={}",
             ns_per_op, sink
         );
     }
 
-    #[test]
-    fn bench_cache_put_eviction() {
-        let mut cache = EdgeSemanticCache::<64>::new();
 
-        let iterations = 100_000u64;
-        let start = std::time::Instant::now();
-        for i in 0..iterations {
-            let intent = CompressedIntent { opcode: (i & 0xFF) as u8, payload_id: i as u16 };
-            let _ = cache.put_intent(i as u32, intent);
-        }
-        let elapsed = start.elapsed();
-        let ns_per_op = elapsed.as_nanos() as f64 / iterations as f64;
-
-        std::println!(
-            "\n[BENCH] EdgeSemanticCache<64> put_intent (with eviction): {:.1} ns/op",
-            ns_per_op
-        );
-    }
 
     #[test]
     fn bench_full_pipeline() {
-        let cache = EdgeSemanticCache::<256>::new();
+        let cache = new_test_cache::<256>();
         let mut uc = UnionCode::new(cache);
         let input = "請幫我拿咖啡".as_bytes();
 
@@ -1068,7 +861,7 @@ mod tests {
         let mut sink = 0u8;
         for _ in 0..iterations {
             // Create a fresh UnionCode each time to force FST path
-            let c = EdgeSemanticCache::<2>::new();
+            let c = new_test_cache::<2>();
             let mut uc2 = UnionCode::new(c);
             if let Ok(intent) = uc2.decode(input) {
                 sink = sink.wrapping_add(intent.opcode);
@@ -1087,86 +880,5 @@ mod tests {
     // LRU COMPLEXITY SCALING TEST
     // ============================================================
 
-    #[test]
-    fn bench_lru_scaling() {
-        // Measure cache get_intent time at different capacities to verify O(N) claim
-        std::println!("\n[BENCH] LRU Scaling Analysis:");
-        std::println!("  {:>8} | {:>12} | {:>12}", "Capacity", "Hit (ns/op)", "Put (ns/op)");
-        std::println!("  {:-<8}-+-{:-<12}-+-{:-<12}", "", "", "");
 
-        // Test with N=4
-        {
-            let mut cache = EdgeSemanticCache::<4>::new();
-            for i in 0..4u32 {
-                cache.put_intent(i, CompressedIntent { opcode: i as u8, payload_id: i as u16 }).unwrap();
-            }
-            let iters = 1_000_000u64;
-            let start = std::time::Instant::now();
-            let mut s = 0u8;
-            for i in 0..iters {
-                if let Some(intent) = cache.get_intent((i % 4) as u32) {
-                    s = s.wrapping_add(intent.opcode);
-                }
-            }
-            let hit_ns = start.elapsed().as_nanos() as f64 / iters as f64;
-
-            let start2 = std::time::Instant::now();
-            for i in 0..iters {
-                let _ = cache.put_intent(i as u32, CompressedIntent { opcode: s, payload_id: i as u16 });
-            }
-            let put_ns = start2.elapsed().as_nanos() as f64 / iters as f64;
-
-            std::println!("  {:>8} | {:>10.1}  | {:>10.1}", 4, hit_ns, put_ns);
-        }
-
-        // Test with N=64
-        {
-            let mut cache = EdgeSemanticCache::<64>::new();
-            for i in 0..64u32 {
-                cache.put_intent(i, CompressedIntent { opcode: i as u8, payload_id: i as u16 }).unwrap();
-            }
-            let iters = 500_000u64;
-            let start = std::time::Instant::now();
-            let mut s = 0u8;
-            for i in 0..iters {
-                if let Some(intent) = cache.get_intent((i % 64) as u32) {
-                    s = s.wrapping_add(intent.opcode);
-                }
-            }
-            let hit_ns = start.elapsed().as_nanos() as f64 / iters as f64;
-
-            let start2 = std::time::Instant::now();
-            for i in 0..iters {
-                let _ = cache.put_intent(i as u32, CompressedIntent { opcode: s, payload_id: i as u16 });
-            }
-            let put_ns = start2.elapsed().as_nanos() as f64 / iters as f64;
-
-            std::println!("  {:>8} | {:>10.1}  | {:>10.1}", 64, hit_ns, put_ns);
-        }
-
-        // Test with N=256
-        {
-            let mut cache = EdgeSemanticCache::<256>::new();
-            for i in 0..256u32 {
-                cache.put_intent(i, CompressedIntent { opcode: i as u8, payload_id: i as u16 }).unwrap();
-            }
-            let iters = 200_000u64;
-            let start = std::time::Instant::now();
-            let mut s = 0u8;
-            for i in 0..iters {
-                if let Some(intent) = cache.get_intent((i % 256) as u32) {
-                    s = s.wrapping_add(intent.opcode);
-                }
-            }
-            let hit_ns = start.elapsed().as_nanos() as f64 / iters as f64;
-
-            let start2 = std::time::Instant::now();
-            for i in 0..iters {
-                let _ = cache.put_intent(i as u32, CompressedIntent { opcode: s, payload_id: i as u16 });
-            }
-            let put_ns = start2.elapsed().as_nanos() as f64 / iters as f64;
-
-            std::println!("  {:>8} | {:>10.1}  | {:>10.1}", 256, hit_ns, put_ns);
-        }
-    }
 }

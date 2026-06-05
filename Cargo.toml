@@ -1,8 +1,15 @@
 [package]
 name = "union_code"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+description = "A zero-allocation, no_std, extreme-compression semantic router for embedded devices like ESP32"
+license = "MIT"
+readme = "ReadMe.md"
+repository = "https://github.com/hianova/UnionCode"
+homepage = "https://github.com/hianova/UnionCode"
+documentation = "https://docs.rs/union_code"
+keywords = ["no_std", "embedded", "router", "aho-corasick", "lru"]
+categories = ["embedded", "no-std", "parser-implementations"]
 
 [dependencies]
 dualcache-ff="0.4.0"
-heapless = { version = "0.8", default-features = false }

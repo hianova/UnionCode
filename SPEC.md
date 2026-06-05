@@ -11,7 +11,7 @@ UnionCode is entirely language-agnostic. It parses data using a **Plug-and-Play 
 The translation pipeline occurs in the following sequence:
 
 1. **Hash Generation (O(N)):** The engine computes an extremely fast FNV-1a hash of the incoming byte stream.
-2. **L1 Semantic Cache (O(1)):** Look up the hash in an internal, statically-allocated LRU cache (e.g., `EdgeSemanticCache`).
+2. **L1 Semantic Cache (O(1)):** Look up the hash in an internal, statically-allocated LRU cache (e.g., `StaticDualCache`).
    - *Hit:* Return the 3-byte intent instantly (~28 ns).
 3. **L2 FST Routing (O(N)):** If not in cache, the engine traverses the deterministic Aho-Corasick Finite State Transducer (FST).
    - *Match:* Extracts the `OpCode` and `PayloadID`, constructs the `CompressedIntent`, writes it back to the L1 Cache, and returns it (~148 ns).
@@ -30,8 +30,8 @@ pub struct CompressedIntent {
 }
 ```
 
-### EdgeSemanticCache
-An `alloc`-free LRU Cache specifically built for embedded systems using the `heapless` crate. Uses a static backing array for its Key-Value map and ordering. Completely `Panic`-safe and Mutex/Lock-free for single-threaded usage. Integrates smoothly with `dualcache-ff` for multi-threaded wait-free operations if needed.
+### StaticDualCache (via dualcache-ff)
+An `alloc`-free LRU Cache specifically built for embedded systems using the `dualcache-ff` crate's `StaticDualCache`. Uses a static backing array for its Key-Value map and ordering. Completely `Panic`-safe and Mutex/Lock-free for single-threaded usage. Seamlessly integrates with the rest of `dualcache-ff` for multi-threaded wait-free operations if needed.
 
 ## 4. Plug-and-Play Dictionaries
 Dictionaries are provided as simple `.txt` files in the `dictionaries/` folder:
