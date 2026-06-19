@@ -1,8 +1,8 @@
-use std::collections::{BTreeMap, VecDeque, HashMap};
+use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::fs::File;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 struct Node {
     transitions: BTreeMap<u8, usize>,
@@ -139,18 +139,7 @@ fn compile_rom(entries: &[(String, Option<u8>, Option<u16>)]) -> Vec<u8> {
     buf
 }
 
-fn find_txt_files(dir: &Path, files: &mut Vec<PathBuf>) {
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                find_txt_files(&path, files);
-            } else if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("txt") {
-                files.push(path);
-            }
-        }
-    }
-}
+
 
 fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();

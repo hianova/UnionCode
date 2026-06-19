@@ -1,6 +1,5 @@
-use union_code::{FstEngine, UnionCode, CompressedIntent};
-use dualcache_ff::static_cache::static_cache::StaticDualCache;
-use dualcache_ff::config::Config;
+use union_code::{FstEngine, UnionCode};
+
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::time::Instant;
@@ -22,7 +21,7 @@ fn main() {
     };
 
     let reader = BufReader::new(file);
-    let mut lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
+    let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
     
     if lines.is_empty() {
         println!("Error: The file is empty.");
@@ -31,10 +30,8 @@ fn main() {
 
     println!("Loaded {} chaotic responses from local LLM.", lines.len());
 
-    let config = Config::with_memory_budget(1, 100);
-    let cache = StaticDualCache::<u32, CompressedIntent, 16>::new(config);
     let fst = FstEngine::new(CHAOS_ROM_MATRIX);
-    let mut uc = UnionCode::new_with_fst(cache, fst);
+    let uc = UnionCode::new(fst);
 
     let mut total_ns = 0;
     let mut successes = 0;

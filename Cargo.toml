@@ -11,8 +11,4 @@ documentation = "https://docs.rs/union_code"
 keywords = ["no_std", "embedded", "router", "aho-corasick", "lru"]
 categories = ["embedded", "no-std", "parser-implementations"]
 
-[dependencies]
-dualcache-ff="0.4.1"
 
-[dev-dependencies]
-loom = "0.7.2"

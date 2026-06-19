@@ -14,16 +14,14 @@ Engineered strictly for high assurance and predictable execution constraints, Un
 
 - **Extreme Binary Compression**: Normalizes unstructured semantic language inputs (e.g., `"hey, can you unlock the delivery box for me please?"`) into a deterministic `3-byte` payload composed of an `OpCode` and a `PayloadID`.
 - **Zero Allocation (`#![no_std]`)**: Operates entirely via statically-allocated RAM buffers and Read-Only Memory (ROM) execution. 100% compatible with Cortex-M, Xtensa (ESP32), and bare-metal environments.
-- **Lock-Free Concurrency**: Both the Fast-State Transducer (FST) and the underlying LRU Semantic Cache resolve intents concurrently. Validated strictly by the `loom` framework, enabling multi-threaded execution over a single `Arc<UnionCode>` reference without race conditions or memory leaks.
+- **Lock-Free Concurrency**: The underlying Fast-State Transducer (FST) revolves around purely immutable `&[u8]` arrays, enabling multi-threaded execution over a single `Arc<UnionCode>` reference without race conditions or memory leaks.
 - **Plug-and-Play Dictionaries**: Vocabularies are authored as flat CSV/text dictionaries and pre-compiled at build time (`build.rs`) into an Aho-Corasick Finite State Transducer (FST) static ROM. Dynamic routing is achieved by simply swapping the static matrix.
 
 ## Architecture
 
-UnionCode employs a sophisticated, zero-allocation 3-stage pipeline:
+UnionCode employs a sophisticated, zero-allocation pipeline:
 
-1. **Hash Generation (O(N))**: Calculates an extremely fast FNV-1a hash over the input byte stream.
-2. **L1 Semantic Cache (O(1))**: Probes an internal lock-free cache (powered by `dualcache-ff`). If the hash resolves, execution terminates instantly, returning the cached intent.
-3. **L2 FST Routing (O(N))**: If the cache misses, the engine systematically iterates through the compiled deterministic FST static matrix. Successful matches are automatically hoisted back into the L1 cache. Unmatched strings return a configurable `0x06 (NotFound)` code.
+1. **FST Routing (O(N))**: The engine systematically iterates through the compiled deterministic FST static matrix. Successful matches are automatically hoisted and returned as a minimal tuple. Unmatched strings return a configurable `0x06 (NotFound)` code.
 
 ## Quick Start Usage
 
@@ -32,7 +30,6 @@ Add UnionCode to your project's `Cargo.toml`:
 ```toml
 [dependencies]
 union_code = "0.2.0"
-dualcache-ff = "0.4.0"
 ```
 
 ### 1. Define Dictionaries
@@ -53,23 +50,17 @@ UnionCode generates a fast, immutable ROM matrix at build time. Include it and i
 
 ```rust
 use union_code::{FstEngine, UnionCode, CompressedIntent};
-use dualcache_ff::static_cache::static_cache::StaticDualCache;
-use dualcache_ff::config::Config;
 
 // Inject the statically compiled ROM Matrix directly into binary flash
 include!(concat!(env!("OUT_DIR"), "/default_rom.rs"));
 
 fn main() {
-    // Instantiate a lock-free cache with a controlled memory footprint
-    let config = Config::with_memory_budget(1, 100);
-    let cache = StaticDualCache::<u32, CompressedIntent, 64>::new(config);
-    
     // Initialize the FST Engine and validate its integrity against corruption
     let fst = FstEngine::new(DEFAULT_ROM_MATRIX);
     assert!(fst.validate_rom(), "Corrupted Static ROM Detected");
     
     // Construct the primary UnionCode translator
-    let uc = UnionCode::new_with_fst(cache, fst);
+    let uc = UnionCode::new(fst);
     
     // Process colloquial language deterministically
     let input = "欸那個，幫我把箱子打開一下啦，謝囉";
@@ -85,7 +76,7 @@ fn main() {
 UnionCode has undergone rigorous code audits to verify system safety:
 - **`#[repr(C)]` Compliance**: Data structures conform strictly to C-compatible layouts to prevent undefined behavior (UB) and misaligned byte access.
 - **ROM Validation**: The `validate_rom(&self)` method prevents arbitrary out-of-bounds pointer execution common with malicious or corrupted FST arrays.
-- **Loom Assured**: Formally modeled through `loom::model` testing parameters ensuring zero memory leaks and data-race-free executions under peak multi-threaded scaling.
+
 
 ## Performance Profiles
 
@@ -93,10 +84,7 @@ Metrics obtained on modern M-Series hardware under `--release` conditions.
 
 | Component | Metric | Description |
 |-----------|--------|-------------|
-| **Hash Formulation** | `< 1 ns` | Sub-nanosecond deterministic checksum logic |
-| **Pipeline Cache Hit** | `~28 ns` | Full UnionCode traversal utilizing an L1 hit |
-| **FST String Traversal** | `~139 ns` | Uncached DFA character branching sequence |
-| **Pipeline Cache Miss** | `~148 ns` | Miss + L2 Resolution + Cache Injection Overhead |
+| **FST String Traversal** | `~幾十奈秒` | Uncached DFA character branching sequence |
 
 ## License
 
